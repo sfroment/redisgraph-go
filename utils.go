@@ -3,8 +3,8 @@ package redisgraph
 import (
 	"crypto/rand"
 	"fmt"
-	"strings"
 	"strconv"
+	"strings"
 )
 
 // go array to string is [1 2 3] for [1, 2, 3] array
@@ -19,10 +19,10 @@ func arrayToString(arr []interface{}) string {
 }
 
 func ToString(i interface{}) string {
-	if(i == nil) {
+	if i == nil {
 		return "null"
 	}
-
+	fmt.Printf("%+v\n", i)
 	switch i.(type) {
 	case string:
 		s := i.(string)
@@ -33,7 +33,7 @@ func ToString(i interface{}) string {
 		return strconv.FormatFloat(i.(float64), 'f', -1, 64)
 	case bool:
 		return strconv.FormatBool(i.(bool))
-	case []interface {}:
+	case []interface{}:
 		arr := i.([]interface{})
 		return arrayToString(arr)
 	default:
@@ -66,7 +66,7 @@ func RandomString(n int) string {
 	return string(output)
 }
 
-func BuildParamsHeader(params map[string]interface{}) (string) {
+func BuildParamsHeader(params map[string]interface{}) string {
 	header := "CYPHER "
 	for key, value := range params {
 		header += fmt.Sprintf("%s=%v ", key, ToString(value))
