@@ -10,21 +10,22 @@ import (
 
 // Graph represents a graph, which is a collection of nodes and edges.
 type Graph struct {
-	Id                string
-	Nodes             map[string]*Node
+	ID                string
+	Nodes             *sync.Map
 	Edges             []*Edge
 	Conn              redis.Conn
 	labels            []string   // List of node labels.
 	relationshipTypes []string   // List of relation types.
 	properties        []string   // List of properties.
 	mutex             sync.Mutex // Lock, used for updating internal state.
+	edgeMutex         sync.Mutex
 }
 
-// New creates a new graph.
-func GraphNew(Id string, conn redis.Conn) Graph {
+// GraphNew creates a new graph.
+func GraphNew(ID string, conn redis.Conn) Graph {
 	g := Graph{
-		Id:                Id,
-		Nodes:             make(map[string]*Node, 0),
+		ID:                ID,
+		Nodes:             &sync.Map{},
 		Edges:             make([]*Edge, 0),
 		Conn:              conn,
 		labels:            make([]string, 0),
@@ -40,7 +41,7 @@ func (g *Graph) AddNode(n *Node) {
 		n.Alias = RandomString(10)
 	}
 	n.graph = g
-	g.Nodes[n.Alias] = n
+	g.Nodes.Store(n.Alias, n)
 }
 
 // AddEdge adds an edge to the graph.
@@ -51,26 +52,28 @@ func (g *Graph) AddEdge(e *Edge) error {
 	}
 
 	// Verify that the edge's nodes have been previously added to the graph
-	if _, ok := g.Nodes[e.Source.Alias]; !ok {
+	if _, ok := g.Nodes.Load(e.Source.Alias); !ok {
 		return fmt.Errorf("Source node neeeds to be added to the graph first")
 	}
-	if _, ok := g.Nodes[e.Destination.Alias]; !ok {
+	if _, ok := g.Nodes.Load(e.Destination.Alias); !ok {
 		return fmt.Errorf("Destination node neeeds to be added to the graph first")
 	}
 
 	e.graph = g
+	g.edgeMutex.Lock()
+	defer g.edgeMutex.Unlock()
 	g.Edges = append(g.Edges, e)
 	return nil
 }
 
 // ExecutionPlan gets the execution plan for given query.
 func (g *Graph) ExecutionPlan(q string) (string, error) {
-	return redis.String(g.Conn.Do("GRAPH.EXPLAIN", g.Id, q))
+	return redis.String(g.Conn.Do("GRAPH.EXPLAIN", g.ID, q))
 }
 
 // Delete removes the graph.
 func (g *Graph) Delete() error {
-	_, err := g.Conn.Do("GRAPH.DELETE", g.Id)
+	_, err := g.Conn.Do("GRAPH.DELETE", g.ID)
 	return err
 }
 
@@ -78,18 +81,31 @@ func (g *Graph) Delete() error {
 func (g *Graph) Flush() (*QueryResult, error) {
 	res, err := g.Commit()
 	if err == nil {
-		g.Nodes = make(map[string]*Node)
+		g.Nodes = &sync.Map{}
 		g.Edges = make([]*Edge, 0)
 	}
 	return res, err
 }
 
+func (g *Graph) nodesLen() int {
+	var count int
+	g.Nodes.Range(func(_, _ interface{}) bool {
+		count++
+		return true
+	})
+	return count
+}
+
 // Commit creates the entire graph, but will re-add nodes if called again.
 func (g *Graph) Commit() (*QueryResult, error) {
-	items := make([]string, 0, len(g.Nodes)+len(g.Edges))
-	for _, n := range g.Nodes {
+	items := make([]string, 0, g.nodesLen()+len(g.Edges))
+
+	g.Nodes.Range(func(_, nInt interface{}) bool {
+		n, _ := nInt.(*Node)
 		items = append(items, n.Encode())
-	}
+		return true
+	})
+
 	for _, e := range g.Edges {
 		items = append(items, e.Encode())
 	}
@@ -99,8 +115,8 @@ func (g *Graph) Commit() (*QueryResult, error) {
 
 // Query executes a query against the graph.
 func (g *Graph) Query(q string) (*QueryResult, error) {
-	
-	r, err := g.Conn.Do("GRAPH.QUERY", g.Id, q, "--compact")
+
+	r, err := g.Conn.Do("GRAPH.QUERY", g.ID, q, "--compact")
 	if err != nil {
 		return nil, err
 	}
@@ -108,11 +124,12 @@ func (g *Graph) Query(q string) (*QueryResult, error) {
 	return QueryResultNew(g, r)
 }
 
+// ParameterizedQuery ...
 func (g *Graph) ParameterizedQuery(q string, params map[string]interface{}) (*QueryResult, error) {
-	if(params != nil){
+	if params != nil {
 		q = BuildParamsHeader(params) + q
 	}
-	return g.Query(q);
+	return g.Query(q)
 }
 
 // Merge pattern
@@ -201,7 +218,7 @@ func (g *Graph) CallProcedure(procedure string, yield []string, args ...interfac
 	return g.Query(q)
 }
 
-// Labels, retrieves all node labels.
+// Labels retrieves all node labels.
 func (g *Graph) Labels() []string {
 	qr, _ := g.CallProcedure("db.labels", nil)
 
